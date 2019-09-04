@@ -143,7 +143,8 @@ plantuml - диаграмма взаимодействия clients-server
 
 
 
+#############################################################################################
 
 
-
+g++ smx_proto_test.cpp -o smx_proto_test -std=c++17 -lstdc++ -lpthread -lboost_system
 

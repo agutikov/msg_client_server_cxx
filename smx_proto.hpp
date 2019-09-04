@@ -1,23 +1,9 @@
 
-#include <iostream>
-#include <iomanip>
 #include <cstddef>
 #include <string>
 #include <vector>
-#include <exception>
-
-#include <boost/asio/buffer.hpp>
 
 #include <boost/fusion/include/define_struct.hpp>
-#include <boost/fusion/include/for_each.hpp>
-#include <boost/fusion/include/value_at.hpp>
-#include <boost/fusion/include/at.hpp>
-
-#include <boost/mpl/range_c.hpp>
-#include <boost/mpl/for_each.hpp>
-#include <boost/mpl/size.hpp>
-
-#include <arpa/inet.h>
 
 #include "proto.hpp"
 using namespace piott::proto;
@@ -105,14 +91,6 @@ struct packet_header
 }
 
 
-BOOST_FUSION_DEFINE_STRUCT(
-    (piott)(smx_proto), test_packet,
-    (uint32_t, magic)
-    (uint32_t, version)
-    (uint32_t, length) 
-    (uint32_t, packet_type)
-    (std::string, xxx)
-)
 
 BOOST_FUSION_ADAPT_STRUCT(
     piott::smx_proto::packet_header,

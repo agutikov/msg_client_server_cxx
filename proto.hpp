@@ -17,47 +17,86 @@
 #include <boost/mpl/for_each.hpp>
 #include <boost/mpl/size.hpp>
 
-#include <arpa/inet.h>
+#include <endian.h>
 
 namespace piott {
 namespace proto {
 
-///////////////////////////////////////////////////////////////////////////////
-// DESERIALIZATION
-///////////////////////////////////////////////////////////////////////////////
+//TODO: Add checksum
 
+/*
+ * It is nessesary to use ntoh/hton for integral fields in packets
+ * if we want code compiled for different architectures with different byteorder work together.
+ * If we plan to run only on x86 or at least on same byteorder architecture each time
+ * then hton/ntoh can be safely removed and it will give us simething like 0.000001% of performance :)
+ * 
+ * I use here big-endian because MEGA-COOL Heavy-Metal magic number 0xDEADFACE is then readable in packet dump!
+ */ 
 template<class T>
 T ntoh(T v);
+
+template<class T>
+T hton(T v);
+
+template<>
+uint64_t ntoh(uint64_t v)
+{
+    return be64toh(v);
+}
 
 template<>
 uint32_t ntoh(uint32_t v)
 {
-    return ntohl(v);
+    return be32toh(v);
 }
 
 template<>
 uint16_t ntoh(uint16_t v)
 {
-    return ntohs(v);
+    return be16toh(v);
 }
 
-struct reader
+template<>
+uint64_t hton(uint64_t v)
 {
-    mutable boost::asio::const_buffer buf_;
+    return htobe64(v);
+}
 
-    explicit reader(boost::asio::const_buffer buf)
-        : buf_(std::move(buf))
+template<>
+uint32_t hton(uint32_t v)
+{
+    return htobe32(v);
+}
+
+template<>
+uint16_t hton(uint16_t v)
+{
+    return htobe16(v);
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// DESERIALIZATION
+///////////////////////////////////////////////////////////////////////////////
+
+struct unpack_item
+{
+    mutable boost::asio::const_buffer input_buffer;
+
+    explicit unpack_item(boost::asio::const_buffer input_buffer)
+        : input_buffer(std::move(input_buffer))
     { }
 
     template<class T>
-    void operator()(T & val) const
+    auto operator()(T & val) const ->
+    typename std::enable_if<std::is_integral<T>::value>::type
     {
-        val = ntoh(*boost::asio::buffer_cast<T const*>(buf_));
-        buf_ = buf_ + sizeof(T);
+        val = ntoh(*boost::asio::buffer_cast<T const*>(input_buffer));
+        input_buffer = input_buffer + sizeof(T);
     }
 
     template<class T>
-    auto operator()(T & val) const -> typename std::enable_if<std::is_enum<T>::value>::type
+    auto operator()(T & val) const ->
+    typename std::enable_if<std::is_enum<T>::value>::type
     {
         typename std::underlying_type<T>::type v;
         (*this)(v);
@@ -90,18 +129,18 @@ struct reader
     {
         uint32_t length = 0;
         (*this)(length);
-        val = std::string(boost::asio::buffer_cast<char const*>(buf_), length);
-        buf_ = buf_ + length;
+        val = std::string(boost::asio::buffer_cast<char const*>(input_buffer), length);
+        input_buffer = input_buffer + length;
     }
 };
 
 template<typename T>
-std::pair<T, boost::asio::const_buffer> read(boost::asio::const_buffer b)
+std::pair<T, boost::asio::const_buffer> unpack_struct(boost::asio::const_buffer input_buffer)
 {
-    reader r(std::move(b));
+    unpack_item unpack(std::move(input_buffer));
     T res;
-    boost::fusion::for_each(res, r);
-    return std::make_pair(res, r.buf_);
+    boost::fusion::for_each(res, unpack);
+    return std::make_pair(res, unpack.input_buffer);
 }
 
 
@@ -109,39 +148,26 @@ std::pair<T, boost::asio::const_buffer> read(boost::asio::const_buffer b)
 // SERIALIZATION
 ///////////////////////////////////////////////////////////////////////////////
 
-template<class T>
-T hton(T v);
-
-template<>
-uint32_t hton(uint32_t v)
+struct pack_item
 {
-    return htonl(v);
-}
+    mutable boost::asio::mutable_buffer output_buffer;
 
-template<>
-uint16_t hton(uint16_t v)
-{
-    return htons(v);
-}
-
-struct writer
-{
-    mutable boost::asio::mutable_buffer buf_;
-
-    explicit writer(boost::asio::mutable_buffer buf)
-    : buf_(std::move(buf))
+    explicit pack_item(boost::asio::mutable_buffer output_buffer)
+    : output_buffer(std::move(output_buffer))
     { }
 
     template<class T>
-    void operator()(T const& val) const
+    auto operator()(T const& val) const ->
+    typename std::enable_if<std::is_integral<T>::value>::type
     {
         T tmp = hton(val);
-        boost::asio::buffer_copy(buf_, boost::asio::buffer(&tmp, sizeof(T)));
-        buf_ = buf_ + sizeof(T);
+        boost::asio::buffer_copy(output_buffer, boost::asio::buffer(&tmp, sizeof(T)));
+        output_buffer = output_buffer + sizeof(T);
     }
     
     template<class T>
-    auto operator()(T const& val) const -> typename std::enable_if<std::is_enum<T>::value>::type
+    auto operator()(T const& val) const ->
+    typename std::enable_if<std::is_enum<T>::value>::type
     {
         using utype = typename std::underlying_type<T>::type;
         (*this)(static_cast<utype>(val));
@@ -157,7 +183,7 @@ struct writer
     template<class T>
     void operator()(std::vector<T> const& vals) const
     {
-        (*this)(vals.length());
+        (*this)(static_cast<uint32_t>(vals.size()));
         for(auto&& val : vals) {
             (*this)(val);
         }
@@ -165,18 +191,18 @@ struct writer
 
     void operator()(std::string const& val) const
     {
-        (*this)(static_cast<uint32_t>(val.length()));
-        boost::asio::buffer_copy(buf_, boost::asio::buffer(val));
-        buf_ = buf_ + val.length();
+        (*this)(static_cast<uint32_t>(val.size()));
+        boost::asio::buffer_copy(output_buffer, boost::asio::buffer(val));
+        output_buffer = output_buffer + val.size();
     }
 };
 
 template<typename T>
-boost::asio::mutable_buffer write(boost::asio::mutable_buffer b, T const& val)
+boost::asio::mutable_buffer pack_struct(boost::asio::mutable_buffer output_buffer, T const& val)
 {
-    writer w(std::move(b));
-    boost::fusion::for_each(val, w);
-    return w.buf_;
+    pack_item pack(std::move(output_buffer));
+    boost::fusion::for_each(val, pack);
+    return pack.output_buffer;
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -216,6 +242,28 @@ namespace detail {
         if constexpr (std::is_unsigned<typename std::underlying_type<T>::type>::value) {
             os << std::dec << std::nouppercase;
         }
+        return os;
+    }
+
+    template<typename T, T v>
+    std::ostream& operator << (std::ostream& os, const std::integral_constant<T, v>& val)
+    {
+        os << "0x" << std::hex << std::uppercase;
+        os << static_cast<T>(val);
+        os << std::dec << std::nouppercase;
+        return os;
+    }
+
+    template<class T>
+    std::ostream& operator << (std::ostream& os, std::vector<T> const& vals)
+    {
+        for (auto it = std::begin(vals); it < vals.end(); it++) {
+            if (it != std::begin(vals)) {
+                os << ", ";
+            }
+            os << *it;
+        }
+        os << ";";
         return os;
     }
 
