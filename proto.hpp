@@ -205,6 +205,49 @@ boost::asio::mutable_buffer pack_struct(boost::asio::mutable_buffer output_buffe
     return pack.output_buffer;
 }
 
+struct get_item_serialized_size
+{
+    template<class T>
+    auto operator()(T const& val) const ->
+    typename std::enable_if<std::is_integral<T>::value, size_t>::type
+    {
+        return sizeof(T);
+    }
+    
+    template<class T>
+    auto operator()(T const& val) const ->
+    typename std::enable_if<std::is_enum<T>::value, size_t>::type
+    {
+        using utype = typename std::underlying_type<T>::type;
+        return sizeof(utype);
+    }
+
+    template<class T, T v>
+    size_t operator()(std::integral_constant<T, v>) const
+    {
+        return sizeof(T);
+    }
+
+    template<class T>
+    size_t operator()(std::vector<T> const& vals) const
+    {
+        return sizeof(uint32_t) + sizeof(T) * vals.size();
+    }
+
+    size_t operator()(std::string const& val) const
+    {
+        return sizeof(uint32_t) + sizeof(std::string::value_type) * val.size();
+    }
+};
+
+template<typename T>
+size_t get_serialized_size(T const& val)
+{
+    get_item_serialized_size item_size;
+    boost::fusion::for_each(val, item_size);
+    return pack.output_buffer;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // PRETTY PRINT
 ///////////////////////////////////////////////////////////////////////////////
